@@ -4,7 +4,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
-import 'package:url_launcher/url_launcher.dart';
+// ✅ DIHAPUS: import 'package:url_launcher/url_launcher.dart';
+//    url_launcher tidak lagi digunakan karena rute kini ditampilkan internal.
 
 // ──────────────────────────────────────────────
 // CONFIGURATION
@@ -107,6 +108,136 @@ class ApiService {
     if (res.statusCode != 200) throw Exception('Server error');
     final List data = jsonDecode(res.body);
     return data.map((e) => Category.fromJson(e)).toList();
+  }
+}
+
+// ══════════════════════════════════════════════
+// ✅ BARU: ROUTING SERVICE
+//
+// Menggantikan url_launcher + Google Maps.
+// Berisi dua fungsi utama:
+//   1. getCurrentLocation() — ambil posisi GPS user
+//   2. getRouteFromOSRM()   — ambil jalur rute dari OSRM API
+// ══════════════════════════════════════════════
+
+class RoutingService {
+  // ── 1. Ambil lokasi pengguna ────────────────────────────────────
+  // Menangani: GPS mati, izin ditolak, izin permanen ditolak, timeout.
+  static Future<Position> getCurrentLocation() async {
+    // Cek apakah layanan lokasi (GPS) aktif
+    final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      throw Exception(
+        'GPS tidak aktif. Aktifkan layanan lokasi di pengaturan perangkat.',
+      );
+    }
+
+    // Cek & minta izin lokasi
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        throw Exception(
+          'Izin lokasi ditolak. Berikan izin lokasi agar rute dapat ditampilkan.',
+        );
+      }
+    }
+    if (permission == LocationPermission.deniedForever) {
+      throw Exception(
+        'Izin lokasi ditolak permanen. Buka Pengaturan aplikasi untuk mengaktifkannya.',
+      );
+    }
+
+    // Ambil posisi dengan timeout
+    try {
+      return await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      ).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw Exception(
+          'Waktu mendapatkan lokasi habis. Pastikan GPS aktif dan coba lagi.',
+        ),
+      );
+    } on Exception {
+      rethrow;
+    } catch (e) {
+      throw Exception('Gagal mendapatkan lokasi: $e');
+    }
+  }
+
+  // ── 2. Ambil rute dari OSRM ─────────────────────────────────────
+  // Endpoint:
+  //   https://router.project-osrm.org/route/v1/driving/
+  //   {startLng},{startLat};{endLng},{endLat}
+  //   ?overview=full&geometries=geojson
+  //
+  // Penting: OSRM menerima koordinat dalam urutan longitude,latitude (GeoJSON).
+  // Response-nya di-parse menjadi List<LatLng> untuk PolylineLayer.
+  //
+  // Menangani: tidak ada internet, server error, rute tidak ditemukan.
+  static Future<List<LatLng>> getRouteFromOSRM(
+    double startLat,
+    double startLng,
+    double endLat,
+    double endLng,
+  ) async {
+    final uri = Uri.parse(
+      'https://router.project-osrm.org/route/v1/driving/'
+      '$startLng,$startLat;$endLng,$endLat'
+      '?overview=full&geometries=geojson',
+    );
+
+    late http.Response response;
+    try {
+      response = await http.get(uri).timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw Exception(
+          'Koneksi ke server rute timeout. Periksa koneksi internet Anda.',
+        ),
+      );
+    } on Exception {
+      rethrow;
+    } catch (_) {
+      throw Exception(
+        'Tidak ada koneksi internet. Periksa jaringan Anda dan coba lagi.',
+      );
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception(
+        'Server rute mengembalikan error (${response.statusCode}). Coba lagi nanti.',
+      );
+    }
+
+    final Map<String, dynamic> data;
+    try {
+      data = jsonDecode(response.body) as Map<String, dynamic>;
+    } catch (_) {
+      throw Exception('Gagal memproses respons dari server rute.');
+    }
+
+    // OSRM mengembalikan field "code": "Ok" jika berhasil
+    final code = data['code'] as String?;
+    if (code != 'Ok') {
+      throw Exception(
+        'OSRM tidak dapat menemukan rute untuk tujuan ini (code: $code).',
+      );
+    }
+
+    final routes = data['routes'] as List?;
+    if (routes == null || routes.isEmpty) {
+      throw Exception('Tidak ada rute yang tersedia untuk tujuan ini.');
+    }
+
+    // Parse koordinat GeoJSON → List<LatLng>
+    // GeoJSON format: [ [lng, lat], [lng, lat], ... ]  ← urutan terbalik!
+    final coordinates = routes[0]['geometry']['coordinates'] as List;
+    return coordinates
+        .map((c) => LatLng(
+              (c[1] as num).toDouble(), // latitude  = index 1
+              (c[0] as num).toDouble(), // longitude = index 0
+            ))
+        .toList();
   }
 }
 
@@ -517,6 +648,12 @@ class _MapScreenState extends State<MapScreen> {
   Place? _selectedPlace;
   final MapController _mapController = MapController();
 
+  // ════════════════════════════════════════════
+  // ✅ BARU: State untuk rute OSRM di MapScreen
+  // ════════════════════════════════════════════
+  List<LatLng> _routePoints = [];  // titik-titik jalur rute dari OSRM
+  bool _isLoadingRoute = false;    // true saat sedang fetch rute
+
   @override
   void initState() {
     super.initState();
@@ -557,12 +694,60 @@ class _MapScreenState extends State<MapScreen> {
     } catch (_) {}
   }
 
-  void _openRoute(Place place) async {
-    final url =
-        'https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}&travelmode=driving';
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+  // ════════════════════════════════════════════
+  // ✅ DIUBAH: _openRoute — tidak lagi membuka
+  //    Google Maps / url_launcher.
+  //
+  //    Sekarang menggunakan RoutingService:
+  //    1. getCurrentLocation() → posisi user
+  //    2. getRouteFromOSRM()   → List<LatLng>
+  //    3. _routePoints diupdate → PolylineLayer render garis
+  // ════════════════════════════════════════════
+  Future<void> _openRoute(Place place) async {
+    setState(() {
+      _isLoadingRoute = true;
+      _routePoints = []; // hapus rute lama
+    });
+
+    try {
+      // Langkah 1: ambil lokasi user
+      final Position pos = await RoutingService.getCurrentLocation();
+
+      // Update marker posisi user sekaligus
+      if (mounted) {
+        setState(() {
+          _userLocation = LatLng(pos.latitude, pos.longitude);
+        });
+      }
+
+      // Langkah 2: ambil rute dari OSRM
+      final List<LatLng> points = await RoutingService.getRouteFromOSRM(
+        pos.latitude,
+        pos.longitude,
+        place.latitude,
+        place.longitude,
+      );
+
+      if (!mounted) return;
+
+      // Langkah 3: simpan rute dan geser peta ke tujuan
+      setState(() => _routePoints = points);
+      _mapController.move(LatLng(place.latitude, place.longitude), 14);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              e.toString().replaceFirst('Exception: ', ''),
+            ),
+            backgroundColor: Colors.red.shade700,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingRoute = false);
     }
   }
 
@@ -583,6 +768,21 @@ class _MapScreenState extends State<MapScreen> {
         backgroundColor: scheme.primary,
         foregroundColor: Colors.white,
         actions: [
+          // ✅ BARU: indikator loading rute di AppBar
+          if (_isLoadingRoute)
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2.5,
+                  ),
+                ),
+              ),
+            ),
           IconButton(
             icon: const Icon(Icons.my_location),
             onPressed: () {
@@ -599,19 +799,44 @@ class _MapScreenState extends State<MapScreen> {
           ? const Center(child: CircularProgressIndicator())
           : Stack(
               children: [
+                // ════════════════════════════════════════════
+                // ✅ DIUBAH: FlutterMap — ditambah PolylineLayer
+                //    sebagai layer ke-2 setelah TileLayer.
+                //    Hanya render jika _routePoints tidak kosong.
+                // ════════════════════════════════════════════
                 FlutterMap(
                   mapController: _mapController,
                   options: MapOptions(
                     initialCenter: center,
                     initialZoom: 14,
-                    onTap: (_, _) => setState(() => _selectedPlace = null),
+                    onTap: (_, __) => setState(() {
+                      _selectedPlace = null;
+                      // Uncomment baris berikut jika ingin rute hilang saat tap peta:
+                      // _routePoints = [];
+                    }),
                   ),
                   children: [
+                    // Layer 1: Tile OSM (tidak berubah)
                     TileLayer(
                       urlTemplate:
                           'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.example.laundry_app',
                     ),
+
+                    // ✅ BARU: Layer 2 — Polyline rute OSRM
+                    // Hanya ditampilkan jika _routePoints tidak kosong.
+                    if (_routePoints.isNotEmpty)
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: _routePoints,
+                            strokeWidth: 5.0,
+                            color: Colors.blue.shade700,
+                          ),
+                        ],
+                      ),
+
+                    // Layer 3: Marker posisi user (tidak berubah)
                     if (_userLocation != null)
                       MarkerLayer(
                         markers: [
@@ -632,6 +857,8 @@ class _MapScreenState extends State<MapScreen> {
                           ),
                         ],
                       ),
+
+                    // Layer 4: Marker laundry (tidak berubah)
                     MarkerLayer(
                       markers: validPlaces
                           .map(
@@ -640,8 +867,10 @@ class _MapScreenState extends State<MapScreen> {
                               width: 44,
                               height: 44,
                               child: GestureDetector(
-                                onTap: () =>
-                                    setState(() => _selectedPlace = p),
+                                onTap: () => setState(() {
+                                  _selectedPlace = p;
+                                  _routePoints = []; // hapus rute lama saat pilih laundry baru
+                                }),
                                 child: Icon(
                                   Icons.location_pin,
                                   color: _selectedPlace?.id == p.id
@@ -657,7 +886,7 @@ class _MapScreenState extends State<MapScreen> {
                   ],
                 ),
 
-                // ── Bottom Sheet for selected place ──────
+                // ── Bottom Sheet untuk laundry yang dipilih ──────
                 if (_selectedPlace != null)
                   Positioned(
                     bottom: 0,
@@ -724,16 +953,34 @@ class _MapScreenState extends State<MapScreen> {
                                 ),
                               ),
                               const SizedBox(width: 10),
+                              // ════════════════════════════════════════
+                              // ✅ DIUBAH: Tombol "Rute" di MapScreen
+                              //    - Tidak lagi membuka Google Maps.
+                              //    - Memanggil _openRoute() → OSRM → PolylineLayer.
+                              //    - Saat loading: tampilkan spinner & nonaktifkan.
+                              // ════════════════════════════════════════
                               Expanded(
                                 child: ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: scheme.primary,
                                     foregroundColor: Colors.white,
                                   ),
-                                  icon: const Icon(Icons.directions),
-                                  label: const Text('Rute'),
-                                  onPressed: () =>
-                                      _openRoute(_selectedPlace!),
+                                  icon: _isLoadingRoute
+                                      ? const SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                            color: Colors.white,
+                                            strokeWidth: 2,
+                                          ),
+                                        )
+                                      : const Icon(Icons.directions),
+                                  label: Text(
+                                    _isLoadingRoute ? 'Memuat...' : 'Rute',
+                                  ),
+                                  onPressed: _isLoadingRoute
+                                      ? null
+                                      : () => _openRoute(_selectedPlace!),
                                 ),
                               ),
                             ],
@@ -928,22 +1175,74 @@ class _CategoryChip extends StatelessWidget {
 
 // ──────────────────────────────────────────────
 // PLACE DETAIL SCREEN
+// ══════════════════════════════════════════════
+// ✅ DIUBAH: StatelessWidget → StatefulWidget
+//    agar bisa menyimpan state routePoints dan isLoadingRoute.
 // ──────────────────────────────────────────────
 
-class PlaceDetailScreen extends StatelessWidget {
+class PlaceDetailScreen extends StatefulWidget {
   final Place place;
   const PlaceDetailScreen({super.key, required this.place});
 
-  void _openRoute(BuildContext ctx) async {
-    final url =
-        'https://www.google.com/maps/dir/?api=1&destination=${place.latitude},${place.longitude}&travelmode=driving';
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else if (ctx.mounted) {
-      ScaffoldMessenger.of(ctx).showSnackBar(
-        const SnackBar(content: Text('Tidak dapat membuka aplikasi peta.')),
+  @override
+  State<PlaceDetailScreen> createState() => _PlaceDetailScreenState();
+}
+
+class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
+  // ════════════════════════════════════════════
+  // ✅ BARU: State rute untuk PlaceDetailScreen
+  // ════════════════════════════════════════════
+  List<LatLng> routePoints = [];  // titik-titik jalur rute dari OSRM
+  bool isLoadingRoute = false;    // true saat sedang fetch rute
+
+  // ════════════════════════════════════════════
+  // ✅ DIUBAH: _openRoute — tidak lagi membuka
+  //    Google Maps / url_launcher.
+  //
+  //    Alur baru:
+  //    1. isLoadingRoute = true, routePoints dikosongkan
+  //    2. getCurrentLocation() → posisi user
+  //    3. getRouteFromOSRM()   → List<LatLng>
+  //    4. setState routePoints → PolylineLayer render garis biru
+  //    5. isLoadingRoute = false
+  // ════════════════════════════════════════════
+  Future<void> _openRoute() async {
+    setState(() {
+      isLoadingRoute = true;
+      routePoints = []; // hapus rute lama
+    });
+
+    try {
+      // Langkah 1: ambil lokasi user (dengan error handling GPS/izin)
+      final Position pos = await RoutingService.getCurrentLocation();
+
+      // Langkah 2: ambil rute dari OSRM
+      final List<LatLng> points = await RoutingService.getRouteFromOSRM(
+        pos.latitude,
+        pos.longitude,
+        widget.place.latitude,
+        widget.place.longitude,
       );
+
+      if (!mounted) return;
+
+      // Langkah 3: simpan ke state → FlutterMap render PolylineLayer
+      setState(() => routePoints = points);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              e.toString().replaceFirst('Exception: ', ''),
+            ),
+            backgroundColor: Colors.red.shade700,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 4),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => isLoadingRoute = false);
     }
   }
 
@@ -960,11 +1259,11 @@ class PlaceDetailScreen extends StatelessWidget {
             backgroundColor: scheme.primary,
             foregroundColor: Colors.white,
             flexibleSpace: FlexibleSpaceBar(
-              title: Text(place.name,
+              title: Text(widget.place.name,
                   style: const TextStyle(color: Colors.white)),
-              background: place.photoUrl.isNotEmpty
+              background: widget.place.photoUrl.isNotEmpty
                   ? Image.network(
-                      place.photoUrl,
+                      widget.place.photoUrl,
                       fit: BoxFit.cover,
                       errorBuilder: (_, _, _) => _heroBg(scheme),
                     )
@@ -983,7 +1282,7 @@ class PlaceDetailScreen extends StatelessWidget {
                       ...List.generate(
                         5,
                         (i) => Icon(
-                          i < place.rating.floor()
+                          i < widget.place.rating.floor()
                               ? Icons.star
                               : Icons.star_border,
                           color: Colors.amber,
@@ -991,7 +1290,7 @@ class PlaceDetailScreen extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text(place.rating.toStringAsFixed(1),
+                      Text(widget.place.rating.toStringAsFixed(1),
                           style: const TextStyle(fontWeight: FontWeight.bold)),
                     ],
                   ),
@@ -1000,7 +1299,7 @@ class PlaceDetailScreen extends StatelessWidget {
                   // Address
                   _InfoRow(
                     icon: Icons.location_on_outlined,
-                    text: place.address,
+                    text: widget.place.address,
                   ),
                   const SizedBox(height: 10),
 
@@ -1008,25 +1307,35 @@ class PlaceDetailScreen extends StatelessWidget {
                   _InfoRow(
                     icon: Icons.gps_fixed,
                     text:
-                        '${place.latitude.toStringAsFixed(6)}, ${place.longitude.toStringAsFixed(6)}',
+                        '${widget.place.latitude.toStringAsFixed(6)}, ${widget.place.longitude.toStringAsFixed(6)}',
                   ),
                   const SizedBox(height: 16),
 
                   // Description
-                  if (place.description.isNotEmpty) ...[
+                  if (widget.place.description.isNotEmpty) ...[
                     const Text(
                       'Deskripsi',
                       style: TextStyle(
                           fontWeight: FontWeight.bold, fontSize: 16),
                     ),
                     const SizedBox(height: 6),
-                    Text(place.description,
+                    Text(widget.place.description,
                         style: TextStyle(color: Colors.grey.shade700)),
                     const SizedBox(height: 20),
                   ],
 
-                  // Mini map
-                  if (place.latitude != 0 && place.longitude != 0) ...[
+                  // ════════════════════════════════════════════
+                  // ✅ DIUBAH: FlutterMap mini — ditambah PolylineLayer
+                  //
+                  //    Layer susunan:
+                  //    1. TileLayer    — tile OSM (tidak berubah)
+                  //    2. PolylineLayer — garis rute biru (BARU, kondisional)
+                  //    3. MarkerLayer  — marker tujuan (tidak berubah)
+                  //
+                  //    PolylineLayer hanya muncul setelah "Buka Rute" ditekan
+                  //    dan berhasil mendapat data dari OSRM.
+                  // ════════════════════════════════════════════
+                  if (widget.place.latitude != 0 && widget.place.longitude != 0) ...[
                     const Text(
                       'Lokasi',
                       style: TextStyle(
@@ -1036,25 +1345,46 @@ class PlaceDetailScreen extends StatelessWidget {
                     ClipRRect(
                       borderRadius: BorderRadius.circular(14),
                       child: SizedBox(
-                        height: 180,
+                        height: 220, // sedikit lebih tinggi agar rute terlihat jelas
                         child: FlutterMap(
                           options: MapOptions(
-                            initialCenter:
-                                LatLng(place.latitude, place.longitude),
-                            initialZoom: 16,
+                            initialCenter: LatLng(
+                              widget.place.latitude,
+                              widget.place.longitude,
+                            ),
+                            initialZoom: 15,
                           ),
                           children: [
+                            // Layer 1: Tile OSM
                             TileLayer(
                               urlTemplate:
                                   'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                               userAgentPackageName:
                                   'com.example.laundry_app',
                             ),
+
+                            // ✅ BARU: Layer 2 — Polyline rute OSRM
+                            // Hanya ditampilkan jika routePoints tidak kosong.
+                            // Garis berwarna biru, lebar 5.
+                            if (routePoints.isNotEmpty)
+                              PolylineLayer(
+                                polylines: [
+                                  Polyline(
+                                    points: routePoints,
+                                    strokeWidth: 5.0,
+                                    color: Colors.blue.shade700,
+                                  ),
+                                ],
+                              ),
+
+                            // Layer 3: Marker tujuan (tidak berubah)
                             MarkerLayer(
                               markers: [
                                 Marker(
-                                  point:
-                                      LatLng(place.latitude, place.longitude),
+                                  point: LatLng(
+                                    widget.place.latitude,
+                                    widget.place.longitude,
+                                  ),
                                   width: 40,
                                   height: 40,
                                   child: Icon(Icons.location_pin,
@@ -1069,7 +1399,12 @@ class PlaceDetailScreen extends StatelessWidget {
                     const SizedBox(height: 24),
                   ],
 
-                  // Route Button
+                  // ════════════════════════════════════════════
+                  // ✅ DIUBAH: Tombol "Buka Rute"
+                  //    - Tidak lagi memanggil url_launcher.
+                  //    - Memanggil _openRoute() → OSRM → PolylineLayer.
+                  //    - Saat loading: tampilkan spinner, nonaktifkan tombol.
+                  // ════════════════════════════════════════════
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
@@ -1081,12 +1416,21 @@ class PlaceDetailScreen extends StatelessWidget {
                           borderRadius: BorderRadius.circular(12),
                         ),
                       ),
-                      icon: const Icon(Icons.directions),
-                      label: const Text(
-                        'Buka Rute',
-                        style: TextStyle(fontSize: 16),
+                      icon: isLoadingRoute
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2.5,
+                              ),
+                            )
+                          : const Icon(Icons.directions),
+                      label: Text(
+                        isLoadingRoute ? 'Memuat Rute...' : 'Buka Rute',
+                        style: const TextStyle(fontSize: 16),
                       ),
-                      onPressed: () => _openRoute(context),
+                      onPressed: isLoadingRoute ? null : _openRoute,
                     ),
                   ),
                   const SizedBox(height: 16),
