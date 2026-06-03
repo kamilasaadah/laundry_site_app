@@ -4,8 +4,8 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'package:geolocator/geolocator.dart';
-// ✅ DIHAPUS: import 'package:url_launcher/url_launcher.dart';
-//    url_launcher tidak lagi digunakan karena rute kini ditampilkan internal.
+import 'package:shared_preferences/shared_preferences.dart';
+
 
 // ──────────────────────────────────────────────
 // CONFIGURATION
@@ -110,6 +110,44 @@ class ApiService {
     return data.map((e) => Category.fromJson(e)).toList();
   }
 }
+
+// FAVORITES SERVICE
+
+class FavoritesService {
+  static const String _favoritesKey = 'favorites_laundry';
+
+  // Ambil daftar ID favorit dari SharedPreferences
+  static Future<List<int>> getFavorites() async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String>? fav = prefs.getStringList(_favoritesKey);
+    return fav?.map((id) => int.parse(id)).toList() ?? [];
+  }
+
+  // Cek apakah suatu laundry sudah difavoritkan
+  static Future<bool> isFavorite(int placeId) async {
+    final favorites = await getFavorites();
+    return favorites.contains(placeId);
+  }
+
+  // Tambah ke favorit
+  static Future<void> addFavorite(int placeId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> fav = (prefs.getStringList(_favoritesKey) ?? []).toList();
+    if (!fav.contains(placeId.toString())) {
+      fav.add(placeId.toString());
+      await prefs.setStringList(_favoritesKey, fav);
+    }
+  }
+
+  // Hapus dari favorit
+  static Future<void> removeFavorite(int placeId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final List<String> fav = (prefs.getStringList(_favoritesKey) ?? []).toList();
+    fav.removeWhere((id) => id == placeId.toString());
+    await prefs.setStringList(_favoritesKey, fav);
+  }
+}
+
 
 // ══════════════════════════════════════════════
 // ✅ BARU: ROUTING SERVICE
@@ -417,6 +455,73 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
 
+            // ══════════════════════════════════════════════
+            // Section Laundry Favorit 
+            // ══════════════════════════════════════════════
+            if (!_loading && _places.isNotEmpty)
+              SliverToBoxAdapter(
+                child: FutureBuilder<List<int>>(
+                  future: FavoritesService.getFavorites(),
+                  builder: (ctx, snapshot) {
+                    if (!snapshot.hasData) return const SizedBox.shrink();
+                    
+                    final favoriteIds = snapshot.data ?? [];
+                    final favorites = _places
+                        .where((p) => favoriteIds.contains(p.id))
+                        .toList();
+
+                    if (favorites.isEmpty) {
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                        child: Text(
+                          'Belum ada laundry favorit',
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(color: Colors.grey.shade600),
+                        ),
+                      );
+                    }
+
+                    return SliverPadding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      sliver: SliverList(
+                        delegate: SliverChildBuilderDelegate(
+                          (ctx, i) => _PlaceCard(place: favorites[i]),
+                          childCount: favorites.length,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+
+            // ── Section Title - "Laundry Favorit" ─────────
+            if (!_loading && _places.isNotEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                  child: Text(
+                    'Semua Tempat Laundry',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+
+            // ── Section Title ─────────────────────────────
+            if (_loading || _places.isEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+                  child: Text(
+                    'Tempat Laundry',
+                    style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+
             // ── Section Title ─────────────────────────────
             SliverToBoxAdapter(
               child: Padding(
@@ -495,9 +600,72 @@ class _HomeScreenState extends State<HomeScreen> {
 
 // ── Place Card Widget ─────────────────────────────────────────
 
-class _PlaceCard extends StatelessWidget {
+class _PlaceCard extends StatefulWidget {
   final Place place;
   const _PlaceCard({required this.place});
+
+  @override
+  State<_PlaceCard> createState() => _PlaceCardState();
+}
+
+class _PlaceCardState extends State<_PlaceCard> {
+  bool _isFavorite = false;
+  double? _distance;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkFavorite();
+    _calculateDistance();
+  }
+
+  Future<void> _checkFavorite() async {
+    final isFav = await FavoritesService.isFavorite(widget.place.id);
+    setState(() => _isFavorite = isFav);
+  }
+
+  Future<void> _calculateDistance() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return;
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.deniedForever) return;
+
+      if (permission == LocationPermission.always ||
+          permission == LocationPermission.whileInUse) {
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        
+        final distance = Geolocator.distanceBetween(
+          pos.latitude,
+          pos.longitude,
+          widget.place.latitude,
+          widget.place.longitude,
+        );
+
+        if (mounted) {
+          setState(() => _distance = distance);
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleFavorite() async {
+    if (_isFavorite) {
+      await FavoritesService.removeFavorite(widget.place.id);
+    } else {
+      await FavoritesService.addFavorite(widget.place.id);
+    }
+    if (mounted) {
+      setState(() => _isFavorite = !_isFavorite);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -510,7 +678,7 @@ class _PlaceCard extends StatelessWidget {
         onTap: () => Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (_) => PlaceDetailScreen(place: place),
+            builder: (_) => PlaceDetailScreen(place: widget.place),
           ),
         ),
         child: Padding(
@@ -520,9 +688,9 @@ class _PlaceCard extends StatelessWidget {
               // Photo / Placeholder
               ClipRRect(
                 borderRadius: BorderRadius.circular(10),
-                child: place.photoUrl.isNotEmpty
+                child: widget.place.photoUrl.isNotEmpty
                     ? Image.network(
-                        place.photoUrl,
+                        widget.place.photoUrl,
                         width: 72,
                         height: 72,
                         fit: BoxFit.cover,
@@ -537,7 +705,7 @@ class _PlaceCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      place.name,
+                      widget.place.name,
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 15,
@@ -545,7 +713,7 @@ class _PlaceCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      place.address,
+                      widget.place.address,
                       style: TextStyle(
                         color: Colors.grey.shade600,
                         fontSize: 12,
@@ -554,12 +722,27 @@ class _PlaceCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                     const SizedBox(height: 6),
+                    // ✅ BARU: Tampilkan jarak atau "Menghitung jarak..."
                     Row(
                       children: [
+                        const Icon(Icons.location_on, size: 12, color: Colors.grey),
+                        const SizedBox(width: 2),
+                        Text(
+                          _distance == null
+                              ? 'Menghitung jarak...'
+                              : _distance! < 1000
+                                  ? '${_distance!.toStringAsFixed(0)} m'
+                                  : '${(_distance! / 1000).toStringAsFixed(1)} km',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey.shade600,
+                          ),
+                        ),
+                        const SizedBox(width: 12),
                         const Icon(Icons.star, size: 14, color: Colors.amber),
                         const SizedBox(width: 3),
                         Text(
-                          place.rating.toStringAsFixed(1),
+                          widget.place.rating.toStringAsFixed(1),
                           style: const TextStyle(fontSize: 12),
                         ),
                       ],
@@ -567,6 +750,18 @@ class _PlaceCard extends StatelessWidget {
                   ],
                 ),
               ),
+              // ✅ BARU: Favorite button
+              IconButton(
+                icon: Icon(
+                  _isFavorite ? Icons.favorite : Icons.favorite_border,
+                  color: _isFavorite ? Colors.red : Colors.grey,
+                  size: 20,
+                ),
+                onPressed: _toggleFavorite,
+                constraints: const BoxConstraints(),
+                padding: EdgeInsets.zero,
+              ),
+              const SizedBox(width: 8),
               const Icon(Icons.chevron_right, color: Colors.grey),
             ],
           ),
@@ -809,7 +1004,7 @@ class _MapScreenState extends State<MapScreen> {
                   options: MapOptions(
                     initialCenter: center,
                     initialZoom: 14,
-                    onTap: (_, __) => setState(() {
+                    onTap: (_, _) => setState(() {
                       _selectedPlace = null;
                       // Uncomment baris berikut jika ingin rute hilang saat tap peta:
                       // _routePoints = [];
@@ -1013,6 +1208,8 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
   String? _selectedCategoryId;
   final TextEditingController _searchCtrl = TextEditingController();
   bool _loading = true;
+  String _sortFilter = 'all'; // 'all', 'nearest', 'highest_rating'
+  LatLng? _userLocation;
   String? _error;
 
   @override
@@ -1031,6 +1228,28 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
   Future<void> _load() async {
     setState(() { _loading = true; _error = null; });
     try {
+      // Ambil lokasi user untuk filter "nearest"
+      try {
+        bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+        if (serviceEnabled) {
+          LocationPermission permission = await Geolocator.checkPermission();
+          if (permission == LocationPermission.denied) {
+            permission = await Geolocator.requestPermission();
+          }
+          if (permission == LocationPermission.deniedForever) {
+            // Izin permanen ditolak, skip lokasi
+          } else if (permission == LocationPermission.always ||
+              permission == LocationPermission.whileInUse) {
+            final pos = await Geolocator.getCurrentPosition(
+              desiredAccuracy: LocationAccuracy.high,
+            );
+            _userLocation = LatLng(pos.latitude, pos.longitude);
+          }
+        }
+      } catch (_) {
+        // Jika gagal ambil lokasi, lanjut tanpa lokasi
+      }
+
       final results = await Future.wait([
         ApiService.fetchPlaces(),
         ApiService.fetchCategories(),
@@ -1046,7 +1265,9 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
 
   void _applyFilter() {
     final q = _searchCtrl.text.toLowerCase();
+    
     setState(() {
+      // Filter berdasarkan kategori dan pencarian
       _filtered = _allPlaces.where((p) {
         final matchCat = _selectedCategoryId == null ||
             p.categoryId == _selectedCategoryId;
@@ -1055,6 +1276,29 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
             p.address.toLowerCase().contains(q);
         return matchCat && matchQ;
       }).toList();
+
+      // Terapkan sorting
+      if (_sortFilter == 'nearest' && _userLocation != null) {
+        // Hitung jarak dan sort dari terdekat ke terjauh
+        _filtered.sort((a, b) {
+          double distA = Geolocator.distanceBetween(
+            _userLocation!.latitude,
+            _userLocation!.longitude,
+            a.latitude,
+            a.longitude,
+          );
+          double distB = Geolocator.distanceBetween(
+            _userLocation!.latitude,
+            _userLocation!.longitude,
+            b.latitude,
+            b.longitude,
+          );
+          return distA.compareTo(distB);
+        });
+      } else if (_sortFilter == 'highest_rating') {
+        // Sort rating dari tertinggi ke terendah
+        _filtered.sort((a, b) => b.rating.compareTo(a.rating));
+      }
     });
   }
 
@@ -1088,6 +1332,44 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
                           contentPadding:
                               const EdgeInsets.symmetric(vertical: 10),
                         ),
+                      ),
+                    ),
+
+                    // Filter Sorting Chips (Jarak & Rating)
+                    SizedBox(
+                      height: 44,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        children: [
+                          _SortChip(
+                            label: 'Semua',
+                            icon: Icons.list,
+                            selected: _sortFilter == 'all',
+                            onTap: () {
+                              setState(() => _sortFilter = 'all');
+                              _applyFilter();
+                            },
+                          ),
+                          _SortChip(
+                            label: 'Terdekat',
+                            icon: Icons.location_on_outlined,
+                            selected: _sortFilter == 'nearest',
+                            onTap: () {
+                              setState(() => _sortFilter = 'nearest');
+                              _applyFilter();
+                            },
+                          ),
+                          _SortChip(
+                            label: 'Rating Tertinggi',
+                            icon: Icons.star_outlined,
+                            selected: _sortFilter == 'highest_rating',
+                            onTap: () {
+                              setState(() => _sortFilter = 'highest_rating');
+                              _applyFilter();
+                            },
+                          ),
+                        ],
                       ),
                     ),
 
@@ -1144,6 +1426,41 @@ class _DirectoryScreenState extends State<DirectoryScreen> {
   }
 }
 
+class _SortChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _SortChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: FilterChip(
+        label: Row(
+          children: [
+            Icon(icon, size: 16),
+            const SizedBox(width: 4),
+            Text(label),
+          ],
+        ),
+        selected: selected,
+        onSelected: (_) => onTap(),
+        selectedColor: scheme.primaryContainer,
+        checkmarkColor: scheme.primary,
+      ),
+    );
+  }
+}
+
 class _CategoryChip extends StatelessWidget {
   final String label;
   final String emoji;
@@ -1194,6 +1511,63 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
   // ════════════════════════════════════════════
   List<LatLng> routePoints = [];  // titik-titik jalur rute dari OSRM
   bool isLoadingRoute = false;    // true saat sedang fetch rute
+  bool _isFavorite = false;
+  double? _userDistance;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkFavorite();
+    _calculateDistance();
+  }
+
+  Future<void> _checkFavorite() async {
+    final isFav = await FavoritesService.isFavorite(widget.place.id);
+    setState(() => _isFavorite = isFav);
+  }
+
+  Future<void> _calculateDistance() async {
+    try {
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return;
+
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.deniedForever) return;
+
+      if (permission == LocationPermission.always ||
+          permission == LocationPermission.whileInUse) {
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        
+        final distance = Geolocator.distanceBetween(
+          pos.latitude,
+          pos.longitude,
+          widget.place.latitude,
+          widget.place.longitude,
+        );
+
+        if (mounted) {
+          setState(() => _userDistance = distance);
+        }
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _toggleFavorite() async {
+    if (_isFavorite) {
+      await FavoritesService.removeFavorite(widget.place.id);
+    } else {
+      await FavoritesService.addFavorite(widget.place.id);
+    }
+    if (mounted) {
+      setState(() => _isFavorite = !_isFavorite);
+    }
+  }
 
   // ════════════════════════════════════════════
   // ✅ DIUBAH: _openRoute — tidak lagi membuka
@@ -1303,6 +1677,17 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   ),
                   const SizedBox(height: 10),
 
+                  // ✅ BARU: Distance to Laundry
+                  _InfoRow(
+                    icon: Icons.directions_run,
+                    text: _userDistance == null
+                        ? 'Menghitung jarak...'
+                        : _userDistance! < 1000
+                            ? 'Jarak: ${_userDistance!.toStringAsFixed(0)} meter'
+                            : 'Jarak: ${(_userDistance! / 1000).toStringAsFixed(1)} km',
+                  ),
+                  const SizedBox(height: 10),
+
                   // Coordinates
                   _InfoRow(
                     icon: Icons.gps_fixed,
@@ -1400,38 +1785,51 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                   ],
 
                   // ════════════════════════════════════════════
-                  // ✅ DIUBAH: Tombol "Buka Rute"
-                  //    - Tidak lagi memanggil url_launcher.
-                  //    - Memanggil _openRoute() → OSRM → PolylineLayer.
-                  //    - Saat loading: tampilkan spinner, nonaktifkan tombol.
+                  // Tombol buka route dan Fav
                   // ════════════════════════════════════════════
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: scheme.primary,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
+                  Row(
+                    children: [
+                      // Favorite button
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          icon: Icon(
+                            _isFavorite ? Icons.favorite : Icons.favorite_border,
+                            color: _isFavorite ? Colors.red : null,
+                          ),
+                          label: Text(_isFavorite ? 'Favorit' : 'Tambah Favorit'),
+                          onPressed: _toggleFavorite,
                         ),
                       ),
-                      icon: isLoadingRoute
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                color: Colors.white,
-                                strokeWidth: 2.5,
-                              ),
-                            )
-                          : const Icon(Icons.directions),
-                      label: Text(
-                        isLoadingRoute ? 'Memuat Rute...' : 'Buka Rute',
-                        style: const TextStyle(fontSize: 16),
+                      const SizedBox(width: 10),
+                      // Route button
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Theme.of(context).colorScheme.primary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                          ),
+                          icon: isLoadingRoute
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2.5,
+                                  ),
+                                )
+                              : const Icon(Icons.directions),
+                          label: Text(
+                            isLoadingRoute ? 'Memuat Rute...' : 'Buka Rute',
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                          onPressed: isLoadingRoute ? null : _openRoute,
+                        ),
                       ),
-                      onPressed: isLoadingRoute ? null : _openRoute,
-                    ),
+                    ],
                   ),
                   const SizedBox(height: 16),
                 ],
