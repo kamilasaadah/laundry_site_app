@@ -5,7 +5,6 @@ import 'package:geolocator/geolocator.dart';
 import '../models/place.dart';
 import '../services/api_service.dart';
 import '../services/routing_service.dart';
-import '../services/favorites_service.dart';
 import '../utils/constants.dart';
 import '../widgets/shared_widgets.dart';
 import 'place_detail_screen.dart';
@@ -25,7 +24,6 @@ class _MapScreenState extends State<MapScreen> {
   final MapController _mapController = MapController();
   List<LatLng> _routePoints = [];
   bool _isLoadingRoute = false;
-  bool _isFavoriteSelected = false;
   double? _selectedDistance;
 
   @override
@@ -67,11 +65,6 @@ class _MapScreenState extends State<MapScreen> {
     } catch (_) {}
   }
 
-  Future<void> _checkSelectedFavorite(Place place) async {
-    final isFav = await FavoritesService.isFavorite(place.id);
-    if (mounted) setState(() => _isFavoriteSelected = isFav);
-  }
-
   Future<void> _calculateSelectedDistance(Place place) async {
     try {
       if (_userLocation == null) {
@@ -96,16 +89,6 @@ class _MapScreenState extends State<MapScreen> {
       );
       if (mounted) setState(() => _selectedDistance = distance);
     } catch (_) {}
-  }
-
-  Future<void> _toggleSelectedFavorite() async {
-    if (_selectedPlace == null) return;
-    if (_isFavoriteSelected) {
-      await FavoritesService.removeFavorite(_selectedPlace!.id);
-    } else {
-      await FavoritesService.addFavorite(_selectedPlace!.id);
-    }
-    if (mounted) setState(() => _isFavoriteSelected = !_isFavoriteSelected);
   }
 
   Future<void> _openRoute(Place place) async {
@@ -215,7 +198,6 @@ class _MapScreenState extends State<MapScreen> {
                                   _routePoints = [];
                                   _selectedDistance = null;
                                 });
-                                _checkSelectedFavorite(p);
                                 _calculateSelectedDistance(p);
                               },
                               child: MapPin(
@@ -305,7 +287,7 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
 
-          // ── Bottom card for selected place (LARGER) ──
+          // ── Bottom card for selected place ──────
           if (_selectedPlace != null)
             Positioned(
               bottom: 12,
@@ -374,8 +356,7 @@ class _MapScreenState extends State<MapScreen> {
                                       size: 14, color: AppColors.starColor),
                                   const SizedBox(width: 3),
                                   Text(
-                                    _selectedPlace!.rating
-                                        .toStringAsFixed(1),
+                                    _selectedPlace!.rating.toStringAsFixed(1),
                                     style: const TextStyle(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w600,
@@ -384,29 +365,6 @@ class _MapScreenState extends State<MapScreen> {
                                 ],
                               ),
                             ],
-                          ),
-                        ),
-                        // Favorite button
-                        GestureDetector(
-                          onTap: _toggleSelectedFavorite,
-                          child: Container(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              color: _isFavoriteSelected
-                                  ? const Color(0xFFFFECF0)
-                                  : AppColors.bgSearch,
-                              shape: BoxShape.circle,
-                            ),
-                            child: Icon(
-                              _isFavoriteSelected
-                                  ? Icons.favorite_rounded
-                                  : Icons.favorite_border_rounded,
-                              color: _isFavoriteSelected
-                                  ? AppColors.accent
-                                  : AppColors.textMuted,
-                              size: 20,
-                            ),
                           ),
                         ),
                       ],
@@ -496,9 +454,7 @@ class _MapScreenState extends State<MapScreen> {
                                   )
                                 : const Icon(Icons.route_rounded, size: 16),
                             label: Text(
-                              _isLoadingRoute
-                                  ? 'Memuat...'
-                                  : 'Buka Rute',
+                              _isLoadingRoute ? 'Memuat...' : 'Buka Rute',
                               style: const TextStyle(
                                 fontWeight: FontWeight.w600,
                                 fontSize: 13,

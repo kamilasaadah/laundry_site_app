@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import '../utils/constants.dart';
 import 'home_screen.dart';
 import 'map_screen.dart';
-import 'favorites_screen.dart';
 import 'directory_screen.dart';
 
 // ──────────────────────────────────────────────
@@ -22,7 +21,6 @@ class _MainShellState extends State<MainShell> {
   final List<Widget> _screens = const [
     HomeScreen(),
     MapScreen(),
-    FavoritesScreen(),
     DirectoryScreen(),
   ];
 
@@ -47,11 +45,6 @@ class _MainShellState extends State<MainShell> {
               icon: Icon(Icons.map_outlined),
               selectedIcon: Icon(Icons.map_rounded),
               label: 'Map',
-            ),
-            NavigationDestination(
-              icon: Icon(Icons.favorite_border_rounded),
-              selectedIcon: Icon(Icons.favorite_rounded),
-              label: 'Favorit',
             ),
             NavigationDestination(
               icon: Icon(Icons.list_alt_outlined),

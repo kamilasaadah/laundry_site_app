@@ -4,7 +4,6 @@ import 'package:latlong2/latlong.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/place.dart';
 import '../services/routing_service.dart';
-import '../services/favorites_service.dart';
 import '../utils/constants.dart';
 import '../widgets/shared_widgets.dart';
 
@@ -19,19 +18,12 @@ class PlaceDetailScreen extends StatefulWidget {
 class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
   List<LatLng> routePoints = [];
   bool isLoadingRoute = false;
-  bool _isFavorite = false;
   double? _userDistance;
 
   @override
   void initState() {
     super.initState();
-    _checkFavorite();
     _calculateDistance();
-  }
-
-  Future<void> _checkFavorite() async {
-    final isFav = await FavoritesService.isFavorite(widget.place.id);
-    if (mounted) setState(() => _isFavorite = isFav);
   }
 
   Future<void> _calculateDistance() async {
@@ -57,15 +49,6 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
         if (mounted) setState(() => _userDistance = distance);
       }
     } catch (_) {}
-  }
-
-  Future<void> _toggleFavorite() async {
-    if (_isFavorite) {
-      await FavoritesService.removeFavorite(widget.place.id);
-    } else {
-      await FavoritesService.addFavorite(widget.place.id);
-    }
-    if (mounted) setState(() => _isFavorite = !_isFavorite);
   }
 
   Future<void> _openRoute() async {
@@ -129,17 +112,6 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                     )
                   : _heroBg(),
             ),
-            actions: [
-              IconButton(
-                icon: Icon(
-                  _isFavorite
-                      ? Icons.favorite_rounded
-                      : Icons.favorite_border_rounded,
-                  color: _isFavorite ? AppColors.accent : Colors.white,
-                ),
-                onPressed: _toggleFavorite,
-              ),
-            ],
           ),
 
           SliverToBoxAdapter(
@@ -271,72 +243,35 @@ class _PlaceDetailScreenState extends State<PlaceDetailScreen> {
                     ),
                   ],
                   const SizedBox(height: 24),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: OutlinedButton.icon(
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: _isFavorite
-                                ? AppColors.accent
-                                : AppColors.primary,
-                            side: BorderSide(
-                              color: _isFavorite
-                                  ? AppColors.accent
-                                  : AppColors.primary,
-                              width: 1.5,
-                            ),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                          icon: Icon(
-                            _isFavorite
-                                ? Icons.favorite_rounded
-                                : Icons.favorite_border_rounded,
-                            size: 18,
-                          ),
-                          label: Text(
-                            _isFavorite ? 'Favorit' : 'Tambah Favorit',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w600),
-                          ),
-                          onPressed: _toggleFavorite,
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
                         ),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
                       ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            foregroundColor: Colors.white,
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            padding:
-                                const EdgeInsets.symmetric(vertical: 14),
-                          ),
-                          icon: isLoadingRoute
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    color: Colors.white,
-                                    strokeWidth: 2.5,
-                                  ),
-                                )
-                              : const Icon(Icons.route_rounded, size: 18),
-                          label: Text(
-                            isLoadingRoute ? 'Memuat Rute...' : 'Buka Rute',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w600, fontSize: 14),
-                          ),
-                          onPressed: isLoadingRoute ? null : _openRoute,
-                        ),
+                      icon: isLoadingRoute
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2.5,
+                              ),
+                            )
+                          : const Icon(Icons.route_rounded, size: 18),
+                      label: Text(
+                        isLoadingRoute ? 'Memuat Rute...' : 'Buka Rute',
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w600, fontSize: 14),
                       ),
-                    ],
+                      onPressed: isLoadingRoute ? null : _openRoute,
+                    ),
                   ),
                   const SizedBox(height: 16),
                 ],

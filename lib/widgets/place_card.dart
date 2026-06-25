@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/place.dart';
-import '../services/favorites_service.dart';
 import '../screens/place_detail_screen.dart';
 import '../utils/constants.dart';
 
@@ -11,27 +10,19 @@ import '../utils/constants.dart';
 
 class PlaceCardVertical extends StatefulWidget {
   final Place place;
-  final VoidCallback? onFavoriteChanged;
-  const PlaceCardVertical({required this.place, this.onFavoriteChanged});
+  const PlaceCardVertical({required this.place});
 
   @override
   State<PlaceCardVertical> createState() => PlaceCardVerticalState();
 }
 
 class PlaceCardVerticalState extends State<PlaceCardVertical> {
-  bool _isFavorite = false;
   double? _distance;
 
   @override
   void initState() {
     super.initState();
-    _checkFavorite();
     _calculateDistance();
-  }
-
-  Future<void> _checkFavorite() async {
-    final isFav = await FavoritesService.isFavorite(widget.place.id);
-    if (mounted) setState(() => _isFavorite = isFav);
   }
 
   Future<void> _calculateDistance() async {
@@ -57,18 +48,6 @@ class PlaceCardVerticalState extends State<PlaceCardVertical> {
         if (mounted) setState(() => _distance = distance);
       }
     } catch (_) {}
-  }
-
-  Future<void> _toggleFavorite() async {
-    if (_isFavorite) {
-      await FavoritesService.removeFavorite(widget.place.id);
-    } else {
-      await FavoritesService.addFavorite(widget.place.id);
-    }
-    if (mounted) {
-      setState(() => _isFavorite = !_isFavorite);
-      widget.onFavoriteChanged?.call();
-    }
   }
 
   String get _distanceText {
@@ -100,7 +79,7 @@ class PlaceCardVerticalState extends State<PlaceCardVertical> {
           MaterialPageRoute(
             builder: (_) => PlaceDetailScreen(place: widget.place),
           ),
-        ).then((_) => _checkFavorite()),
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -110,50 +89,15 @@ class PlaceCardVerticalState extends State<PlaceCardVertical> {
                 topLeft: Radius.circular(18),
                 topRight: Radius.circular(18),
               ),
-              child: Stack(
-                children: [
-                  widget.place.photoUrl.isNotEmpty
-                      ? Image.network(
-                          widget.place.photoUrl,
-                          width: double.infinity,
-                          height: 240,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _photoPlaceholder(),
-                        )
-                      : _photoPlaceholder(),
-                  // Favorite button overlay
-                  Positioned(
-                    top: 12,
-                    right: 12,
-                    child: GestureDetector(
-                      onTap: _toggleFavorite,
-                      child: Container(
-                        width: 40,
-                        height: 40,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.9),
-                          shape: BoxShape.circle,
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withValues(alpha: 0.1),
-                              blurRadius: 4,
-                            ),
-                          ],
-                        ),
-                        child: Icon(
-                          _isFavorite
-                              ? Icons.favorite_rounded
-                              : Icons.favorite_border_rounded,
-                          color: _isFavorite
-                              ? AppColors.accent
-                              : AppColors.textMuted,
-                          size: 20,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
+              child: widget.place.photoUrl.isNotEmpty
+                  ? Image.network(
+                      widget.place.photoUrl,
+                      width: double.infinity,
+                      height: 240,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => _photoPlaceholder(),
+                    )
+                  : _photoPlaceholder(),
             ),
 
             // ── Info below ────────────────────────
@@ -162,21 +106,15 @@ class PlaceCardVerticalState extends State<PlaceCardVertical> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          widget.place.name,
-                          style: const TextStyle(
-                            fontWeight: FontWeight.w700,
-                            fontSize: 17,
-                            color: AppColors.textPrimary,
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ),
-                    ],
+                  Text(
+                    widget.place.name,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 17,
+                      color: AppColors.textPrimary,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 6),
                   Text(
@@ -262,32 +200,24 @@ class PlaceCardVerticalState extends State<PlaceCardVertical> {
 }
 
 // ──────────────────────────────────────────────
-// PLACE CARD LARGE (horizontal — for Favorites & Directory, larger)
+// PLACE CARD LARGE (horizontal — for Directory)
 // ──────────────────────────────────────────────
 
 class PlaceCardLarge extends StatefulWidget {
   final Place place;
-  final VoidCallback? onFavoriteChanged;
-  const PlaceCardLarge({required this.place, this.onFavoriteChanged});
+  const PlaceCardLarge({required this.place});
 
   @override
   State<PlaceCardLarge> createState() => PlaceCardLargeState();
 }
 
 class PlaceCardLargeState extends State<PlaceCardLarge> {
-  bool _isFavorite = false;
   double? _distance;
 
   @override
   void initState() {
     super.initState();
-    _checkFavorite();
     _calculateDistance();
-  }
-
-  Future<void> _checkFavorite() async {
-    final isFav = await FavoritesService.isFavorite(widget.place.id);
-    if (mounted) setState(() => _isFavorite = isFav);
   }
 
   Future<void> _calculateDistance() async {
@@ -313,18 +243,6 @@ class PlaceCardLargeState extends State<PlaceCardLarge> {
         if (mounted) setState(() => _distance = distance);
       }
     } catch (_) {}
-  }
-
-  Future<void> _toggleFavorite() async {
-    if (_isFavorite) {
-      await FavoritesService.removeFavorite(widget.place.id);
-    } else {
-      await FavoritesService.addFavorite(widget.place.id);
-    }
-    if (mounted) {
-      setState(() => _isFavorite = !_isFavorite);
-      widget.onFavoriteChanged?.call();
-    }
   }
 
   String get _distanceText {
@@ -356,7 +274,7 @@ class PlaceCardLargeState extends State<PlaceCardLarge> {
           MaterialPageRoute(
             builder: (_) => PlaceDetailScreen(place: widget.place),
           ),
-        ).then((_) => _checkFavorite()),
+        ),
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Row(
@@ -428,29 +346,8 @@ class PlaceCardLargeState extends State<PlaceCardLarge> {
                 ),
               ),
               const SizedBox(width: 8),
-              Column(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  // Favorite button
-                  GestureDetector(
-                    onTap: _toggleFavorite,
-                    child: Padding(
-                      padding: const EdgeInsets.all(4),
-                      child: Icon(
-                        _isFavorite
-                            ? Icons.favorite_rounded
-                            : Icons.favorite_border_rounded,
-                        color: _isFavorite
-                            ? AppColors.accent
-                            : AppColors.textMuted,
-                        size: 22,
-                      ),
-                    ),
-                  ),
-                  const Icon(Icons.chevron_right_rounded,
-                      color: AppColors.textMuted, size: 20),
-                ],
-              ),
+              const Icon(Icons.chevron_right_rounded,
+                  color: AppColors.textMuted, size: 20),
             ],
           ),
         ),
